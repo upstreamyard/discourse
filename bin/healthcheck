@@ -1,0 +1,8 @@
+#!/bin/bash
+# Docker HEALTHCHECK: checks the process this container runs (see docker-entrypoint.sh).
+mode=$(tr '\0' ' ' < /proc/1/cmdline | sed -E 's#.*docker-entrypoint.sh ?##' | awk '{print $1}')
+case "${mode:-web}" in
+  web) [ "$(curl -sf "http://localhost:${UNICORN_PORT:-3000}/srv/status")" = ok ] ;;
+  sidekiq) exec sidekiq-alive ;;
+  *) exit 0 ;;
+esac

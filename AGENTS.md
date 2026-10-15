@@ -10,7 +10,7 @@ Instructions for AI agents and coding assistants working with this repository or
 | Tags | `<version>` (e.g. `2026.9.0`), `<year>.<month>` (e.g. `2026.9`), `latest` |
 | Platforms | `linux/amd64`, `linux/arm64` |
 | Port | `3000` (HTTP, no TLS) |
-| Probe | `GET /srv/status` returns `ok` (liveness, readiness, startup) |
+| Probes | web: `GET /srv/status` returns `ok` (liveness, readiness, startup); sidekiq: exec `sidekiq-alive` (Sidekiq heartbeat in Redis) |
 | User | non-root, UID/GID `10001`; needs a writable root filesystem |
 | Entrypoint | `tini -- docker-entrypoint.sh`, default command `web` |
 | Commands | `web`, `sidekiq`, `migrate`, `precompile-css`; `rake`, `rails`, `discourse` (also via `docker exec` / `kubectl exec`) |
@@ -29,7 +29,7 @@ Rules that avoid the common failures:
 - **Email:** `DISCOURSE_SMTP_ADDRESS`, `DISCOURSE_SMTP_PORT`, `DISCOURSE_SMTP_USER_NAME`, `DISCOURSE_SMTP_PASSWORD`, `DISCOURSE_NOTIFICATION_EMAIL`. Emails are sent by Sidekiq, so a Sidekiq process must run (built into `web` by default).
 - **First admin:** `rake admin:create` in a running container (`docker compose exec discourse rake admin:create`, `kubectl exec -it deploy/discourse -- rake admin:create`). It asks for email, password and confirmation.
 - **Single container:** the default `web` command runs migrations, the web server and one Sidekiq process. Nothing else is needed.
-- **Separate processes (Kubernetes):** run `migrate` as a Job once per release, web pods with `MIGRATE_ON_BOOT=0` and `UNICORN_SIDEKIQS=0`, and a `sidekiq` Deployment. Scheduled tasks run inside Sidekiq.
+- **Separate processes (Kubernetes):** run `migrate` as a Job once per release (with `SKIP_POST_DEPLOYMENT_MIGRATIONS=1` before the rollout, and again without it afterwards for the post-deployment migrations), web pods with `MIGRATE_ON_BOOT=0` and `UNICORN_SIDEKIQS=0`, and a `sidekiq` Deployment. Scheduled tasks run inside Sidekiq.
 - **More than one web pod:** uploads must be on a shared volume (ReadWriteMany) or in S3-compatible storage (not covered by our tests yet).
 - **TLS:** the image serves plain HTTP on port 3000. Terminate TLS in front and pass `X-Forwarded-Proto`.
 - **Plugins:** only the plugins bundled with Discourse are included. Third-party plugins are not supported by this image yet.
@@ -52,7 +52,7 @@ Layout:
 
 - `Dockerfile`: builds the Discourse source code, which CI checks out into `./upstream/` (git-ignored)
 - `docker-entrypoint.sh`: the commands (`web`, `sidekiq`, `migrate`, `precompile-css`)
-- `bin/`: `rake`, `rails`, `discourse` wrappers installed into `/usr/local/bin`
+- `bin/`: `rake`, `rails`, `discourse` wrappers, and the `healthcheck` / `sidekiq-alive` checks, installed into `/usr/local/bin`
 - `scripts/smoke-test.sh`: the test CI runs before publishing; run it locally too
 - `.github/workflows/build.yml`: resolves the Discourse version and base image, builds and smoke-tests on native amd64 and arm64 runners, then pushes, creates the multi-arch tags, signs and syncs the Docker Hub README
 

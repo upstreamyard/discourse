@@ -1,0 +1,45 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+# Liveness check for the `sidekiq` command: succeeds when a Sidekiq process on this host
+# is registered in Redis and sent its heartbeat within the last 100 s (the threshold Discourse
+# itself uses). A hung Sidekiq fails after about 60 s, when its registration expires. Reads the
+# same DISCOURSE_REDIS_* settings as Discourse; Sidekiq
+# uses database DISCOURSE_REDIS_DB + 1. Doesn't load Rails, so it's cheap to run.
+Dir.chdir("/var/www/discourse")
+ENV["BUNDLE_GEMFILE"] ||= "/var/www/discourse/Gemfile"
+require "bundler/setup"
+require "redis"
+require "socket"
+
+MAX_AGE = 100
+
+redis =
+  Redis.new(
+    host: ENV.fetch("DISCOURSE_REDIS_HOST", "localhost"),
+    port: ENV.fetch("DISCOURSE_REDIS_PORT", "6379").to_i,
+    db: ENV.fetch("DISCOURSE_REDIS_DB", "0").to_i + 1,
+    username: ENV["DISCOURSE_REDIS_USERNAME"].to_s.empty? ? nil : ENV["DISCOURSE_REDIS_USERNAME"],
+    password: ENV["DISCOURSE_REDIS_PASSWORD"].to_s.empty? ? nil : ENV["DISCOURSE_REDIS_PASSWORD"],
+    ssl: %w[1 true].include?(ENV["DISCOURSE_REDIS_USE_SSL"].to_s),
+    connect_timeout: 3,
+    read_timeout: 3,
+  )
+
+host = ENV["DYNO"] || Socket.gethostname
+beats =
+  redis
+    .smembers("processes")
+    .select { |identity| identity.start_with?("#{host}:") }
+    .filter_map { |identity| redis.hget(identity, "beat")&.to_f }
+
+if beats.empty?
+  warn "no Sidekiq process registered for #{host}"
+  exit 1
+end
+
+age = Time.now.to_f - beats.max
+if age > MAX_AGE
+  warn "last Sidekiq heartbeat #{age.round} s ago"
+  exit 1
+end
+puts "Sidekiq alive (heartbeat #{age.round} s ago)"

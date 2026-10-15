@@ -78,7 +78,8 @@ RUN apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-ins
 
 COPY --from=builder --chown=app:app /var/www/discourse /var/www/discourse
 COPY --chown=root:root --chmod=0755 docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
-# rake, rails, discourse: run in the app directory with its gems, also via docker/kubectl exec
+# rake, rails, discourse: run in the app directory with its gems, also via docker/kubectl exec;
+# healthcheck, sidekiq-alive: health checks for the web and sidekiq commands
 COPY --chown=root:root --chmod=0755 bin/ /usr/local/bin/
 COPY upstream/LICENSE.txt upstream/COPYRIGHT.md /licenses/discourse/
 
@@ -110,7 +111,7 @@ EXPOSE 3000
 VOLUME ["/var/www/discourse/public/uploads", "/var/www/discourse/public/backups"]
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=120s --retries=3 \
-    CMD curl -sf "http://localhost:${UNICORN_PORT}/srv/status" || exit 1
+    CMD ["healthcheck"]
 
 USER 10001:10001
 

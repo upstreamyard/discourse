@@ -16,7 +16,7 @@ Multi-arch (`amd64`, `arm64`), signed container images for [Discourse](https://g
 | | |
 |---|---|
 | Port | `3000` (HTTP; put your ingress or reverse proxy in front for TLS) |
-| Probe | `GET /srv/status` returns `ok` (use it for liveness and readiness) |
+| Probes | `GET /srv/status` returns `ok` (web: liveness and readiness); `sidekiq-alive` (exec, sidekiq: checks Sidekiq's heartbeat in Redis) |
 | Requires | PostgreSQL 18 **with the pgvector extension**, e.g. `pgvector/pgvector:pg18`, and Redis 7 |
 | Runs as | non-root UID `10001` |
 | Processes | `web` (default; also runs Sidekiq unless `UNICORN_SIDEKIQS=0`), `sidekiq`, `migrate` |
@@ -99,7 +99,7 @@ The container's command selects the process:
 | `precompile-css` | Compile the CSS of all themes and exit. Optional: CSS is otherwise compiled on its first request |
 | `rake …`, `rails …`, `discourse …` | Discourse's admin commands, e.g. `rake admin:create`, `discourse backup`, `rails runner '…'` |
 
-`rake`, `rails` and `discourse` also work with `docker exec` and `kubectl exec`.
+`rake`, `rails` and `discourse` also work with `docker exec` and `kubectl exec`. The Docker `HEALTHCHECK` checks whichever process the container runs: `/srv/status` for `web`, the Redis heartbeat for `sidekiq`.
 
 ### Storage
 
@@ -122,8 +122,9 @@ Running it yourself:
 
 1. Run migrations once per release as a Job with the `migrate` command, and set `MIGRATE_ON_BOOT=0` on the web pods.
 2. Run web pods with `UNICORN_SIDEKIQS=0` and a separate `sidekiq` Deployment, so web and background jobs scale independently.
-3. Probe `GET /srv/status` on port 3000 for liveness, readiness and startup.
-4. Give the pods a shared uploads volume (or S3), and the same `DISCOURSE_SECRET_KEY_BASE`.
+3. Probe `GET /srv/status` on port 3000 for liveness, readiness and startup of web pods, and exec `sidekiq-alive` for Sidekiq pods (fails about 60 s after Sidekiq stops sending its heartbeat to Redis).
+4. Run the regular migrations before the rollout with `SKIP_POST_DEPLOYMENT_MIGRATIONS=1`, and the post-deployment migrations (which remove old columns) after it.
+5. Give the pods a shared uploads volume (or S3), and the same `DISCOURSE_SECRET_KEY_BASE`.
 
 Stopping is graceful: on `SIGTERM` the web server finishes requests in flight before it exits. The container runs as non-root UID `10001` and is compatible with `runAsNonRoot: true`; it needs a writable root filesystem.
 
