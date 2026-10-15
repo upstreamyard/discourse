@@ -1,0 +1,27 @@
+# upstreamyard/discourse
+
+> Multi-arch (amd64, arm64), cosign-signed container image for Discourse, the open-source community forum, with one process per container. Community-maintained by upstreamyard; not an official Discourse image. Pull `upstreamyard/discourse:<version>` or `ghcr.io/upstreamyard/discourse:<version>`. Listens on port 3000 (HTTP) and needs PostgreSQL 18 with the pgvector extension (e.g. `pgvector/pgvector:pg18`) and Redis 7.
+
+Key facts: probe `GET /srv/status` (returns `ok`), non-root UID 10001, configuration via `DISCOURSE_*` environment variables (`DISCOURSE_DB_HOST`, `DISCOURSE_REDIS_HOST`, `DISCOURSE_HOSTNAME`, `DISCOURSE_SECRET_KEY_BASE`, `DISCOURSE_SMTP_*`). Commands: `web` (default, runs migrations first unless `MIGRATE_ON_BOOT=0`, and Sidekiq unless `UNICORN_SIDEKIQS=0`), `sidekiq`, `migrate`, `precompile-css`. First admin: `rake admin:create`. Uploads and backups live in `/var/www/discourse/public/uploads` and `/var/www/discourse/public/backups`. Only the plugins bundled with Discourse are included.
+
+## Docs
+
+- [README](https://raw.githubusercontent.com/upstreamyard/discourse/main/README.md): quick start, configuration, commands, Kubernetes notes, image verification
+- [AGENTS.md](https://raw.githubusercontent.com/upstreamyard/discourse/main/AGENTS.md): image facts table, deployment rules, repository conventions
+
+## Examples
+
+- [docker-compose.yml](https://raw.githubusercontent.com/upstreamyard/discourse/main/docker-compose.yml): Discourse, PostgreSQL with pgvector and Redis in a single Compose file
+- [Helm chart](https://raw.githubusercontent.com/upstreamyard/helm-charts/main/charts/discourse/README.md): recommended for Kubernetes; `helm repo add upstreamyard https://upstreamyard.github.io/helm-charts`
+
+## Discourse project
+
+- [Discourse repository](https://github.com/discourse/discourse): source, release tags
+- [Discourse settings reference](https://raw.githubusercontent.com/discourse/discourse/main/config/discourse_defaults.conf): every setting, available as `DISCOURSE_<SETTING>`
+- [Discourse Meta](https://meta.discourse.org): documentation and support for using and administering Discourse
+
+## Optional
+
+- [Build workflow](https://raw.githubusercontent.com/upstreamyard/discourse/main/.github/workflows/build.yml): how images are built, tested, signed and published
+- [Dockerfile](https://raw.githubusercontent.com/upstreamyard/discourse/main/Dockerfile)
+- [Smoke test](https://raw.githubusercontent.com/upstreamyard/discourse/main/scripts/smoke-test.sh)

@@ -1,0 +1,3 @@
+#!/bin/bash
+# Run Discourse's `rails` in the app directory with the app's gems (also via docker exec / kubectl exec).
+cd /var/www/discourse && export LD_PRELOAD="${RUBY_ALLOCATOR:-/usr/lib/libjemalloc.so}" && exec bundle exec bin/rails "$@"

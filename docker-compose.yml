@@ -1,0 +1,60 @@
+# Discourse with PostgreSQL (pgvector) and Redis. Set the variables in a .env file next to
+# this file (see README, "Quick start"), then: docker compose up -d
+services:
+  postgres:
+    image: pgvector/pgvector:pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: discourse
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: discourse
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U discourse -d discourse"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  discourse:
+    image: upstreamyard/discourse:latest
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      DISCOURSE_HOSTNAME: ${DISCOURSE_HOSTNAME:?set DISCOURSE_HOSTNAME in .env}
+      DISCOURSE_SECRET_KEY_BASE: ${DISCOURSE_SECRET_KEY_BASE:?set DISCOURSE_SECRET_KEY_BASE in .env}
+      DISCOURSE_DB_HOST: postgres
+      DISCOURSE_DB_PASSWORD: ${POSTGRES_PASSWORD}
+      DISCOURSE_REDIS_HOST: redis
+      DISCOURSE_SMTP_ADDRESS: ${DISCOURSE_SMTP_ADDRESS:-}
+      DISCOURSE_SMTP_PORT: ${DISCOURSE_SMTP_PORT:-587}
+      DISCOURSE_SMTP_USER_NAME: ${DISCOURSE_SMTP_USER_NAME:-}
+      DISCOURSE_SMTP_PASSWORD: ${DISCOURSE_SMTP_PASSWORD:-}
+      DISCOURSE_NOTIFICATION_EMAIL: ${DISCOURSE_NOTIFICATION_EMAIL:-}
+    volumes:
+      - uploads:/var/www/discourse/public/uploads
+      - backups:/var/www/discourse/public/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
+  redis_data:
+  uploads:
+  backups:
