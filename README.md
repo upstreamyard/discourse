@@ -1,3 +1,5 @@
+<img src="https://upstreamyard.github.io/helm-charts/logo.png" alt="upstreamyard logo" width="120" align="right">
+
 # Discourse container image
 
 Multi-arch (`amd64`, `arm64`), signed container images for [Discourse](https://github.com/discourse/discourse), the open-source community forum, built to run like any other app container: one process per container, configured by environment variables, with external PostgreSQL and Redis. Made for Kubernetes and Docker Compose.
