@@ -1,0 +1,307 @@
+name: Build & publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    # Daily: pick up new Discourse releases automatically.
+    - cron: "37 4 * * *"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Discourse version to build (e.g. 2026.9.0). Empty = latest release."
+        required: false
+        default: ""
+      force:
+        description: "Rebuild even if this version is already published"
+        type: boolean
+        default: false
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.version }}
+  cancel-in-progress: false
+
+env:
+  UPSTREAM_REPO: discourse/discourse
+  IMAGE_NAME: discourse
+
+permissions:
+  contents: read
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      minor: ${{ steps.v.outputs.minor }}
+      is_latest: ${{ steps.v.outputs.is_latest }}
+      build: ${{ steps.v.outputs.build }}
+      base: ${{ steps.v.outputs.base }}
+    steps:
+      - id: v
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          FORCE: ${{ inputs.force }}
+          EVENT: ${{ github.event_name }}
+          GHCR_IMAGE: ghcr.io/${{ github.repository_owner }}/discourse
+        run: |
+          set -euo pipefail
+          # Discourse publishes releases as git tags (vYYYY.M.P); "-latest" tags are pre-releases.
+          latest=$(git ls-remote --tags --refs "https://github.com/$UPSTREAM_REPO.git" \
+            | sed 's#.*refs/tags/v##' | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
+          version=${INPUT_VERSION:-$latest}
+          version=${version#v}
+
+          # Runtime base: the discourse/base tag Discourse's launcher currently builds on.
+          base=$(curl -fsSL https://raw.githubusercontent.com/discourse/discourse_docker/main/templates/web.template.yml \
+            | sed -n 's/^base_image: *//p')
+
+          {
+            echo "version=$version"
+            echo "minor=$(echo "$version" | cut -d. -f1-2)"
+            echo "is_latest=$([ "$version" = "$latest" ] && echo true || echo false)"
+            echo "base=${base}-runtime-deps"
+          } >> "$GITHUB_OUTPUT"
+
+          build=true
+          # Scheduled runs only build when the version is not published yet.
+          if [ "$EVENT" = "schedule" ] || { [ "$EVENT" = "workflow_dispatch" ] && [ "$FORCE" != "true" ]; }; then
+            if docker buildx imagetools inspect "${GHCR_IMAGE,,}:$version" >/dev/null 2>&1; then
+              echo "$version already published, skipping."
+              build=false
+            fi
+          fi
+          echo "build=$build" >> "$GITHUB_OUTPUT"
+          echo "Latest Discourse release: $latest | building: $version | base: ${base}-runtime-deps | build: $build"
+
+  # Each architecture builds and is smoke-tested on a native runner: the Ember build
+  # takes hours under QEMU emulation.
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.build == 'true'
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - platform: linux/amd64
+            pair: linux-amd64
+            runner: ubuntu-latest
+          - platform: linux/arm64
+            pair: linux-arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write   # push to GHCR
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      PUBLISH: ${{ github.event_name != 'pull_request' }}
+      DOCKERHUB_ENABLED: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      QUAY_ENABLED: ${{ secrets.QUAY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out Discourse v${{ env.VERSION }}
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: v${{ env.VERSION }}
+          path: upstream
+
+      - uses: docker/setup-buildx-action@v3
+
+      # ---------- Smoke test before anything is published ----------
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          load: true
+          tags: discourse:smoke
+          build-args: |
+            DISCOURSE_VERSION=${{ env.VERSION }}
+            DISCOURSE_BASE=${{ needs.resolve.outputs.base }}
+          cache-from: type=gha,scope=${{ matrix.pair }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.pair }}
+
+      - name: Smoke test against PostgreSQL (pgvector) and Redis
+        run: ./scripts/smoke-test.sh discourse:smoke
+
+      - name: Container logs
+        if: always()
+        run: docker logs discourse-smoke 2>&1 | tail -80 || true
+
+      # ---------- Publish this platform by digest ----------
+      - name: Log in to Docker Hub
+        if: env.PUBLISH == 'true' && env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        if: env.PUBLISH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Log in to Quay.io
+        if: env.PUBLISH == 'true' && env.QUAY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ vars.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Image names
+        id: images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || github.repository_owner }}
+          QUAY_NAMESPACE: ${{ vars.QUAY_NAMESPACE || github.repository_owner }}
+        run: |
+          names="ghcr.io/${OWNER,,}/$IMAGE_NAME"
+          [ "$DOCKERHUB_ENABLED" = "true" ] && names="$names,docker.io/${DOCKERHUB_NAMESPACE,,}/$IMAGE_NAME"
+          [ "$QUAY_ENABLED" = "true" ] && names="$names,quay.io/${QUAY_NAMESPACE,,}/$IMAGE_NAME"
+          echo "names=$names" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push by digest
+        id: push
+        if: env.PUBLISH == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            DISCOURSE_VERSION=${{ env.VERSION }}
+            DISCOURSE_BASE=${{ needs.resolve.outputs.base }}
+          labels: |
+            org.opencontainers.image.version=${{ env.VERSION }}
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+          outputs: type=image,"name=${{ steps.images.outputs.names }}",push-by-digest=true,name-canonical=true,push=true
+          sbom: true
+          provenance: mode=max
+          cache-from: type=gha,scope=${{ matrix.pair }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.pair }}
+
+      - name: Export digest
+        if: env.PUBLISH == 'true'
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          mkdir -p "${{ runner.temp }}/digests"
+          touch "${{ runner.temp }}/digests/${DIGEST#sha256:}"
+
+      - name: Upload digest
+        if: env.PUBLISH == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.pair }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------- Multi-arch tags, signing, Docker Hub description ----------
+  publish:
+    needs: [resolve, build]
+    if: needs.resolve.outputs.build == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write   # push to GHCR
+      id-token: write   # keyless cosign signing
+    env:
+      VERSION: ${{ needs.resolve.outputs.version }}
+      DOCKERHUB_ENABLED: ${{ secrets.DOCKERHUB_TOKEN != '' }}
+      QUAY_ENABLED: ${{ secrets.QUAY_TOKEN != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download digests
+        uses: actions/download-artifact@v4
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        if: env.DOCKERHUB_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Log in to Quay.io
+        if: env.QUAY_ENABLED == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: quay.io
+          username: ${{ vars.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_TOKEN }}
+
+      - name: Image names
+        id: images
+        env:
+          OWNER: ${{ github.repository_owner }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE || github.repository_owner }}
+          QUAY_NAMESPACE: ${{ vars.QUAY_NAMESPACE || github.repository_owner }}
+        run: |
+          {
+            echo "list<<EOF"
+            echo "ghcr.io/${OWNER,,}/$IMAGE_NAME"
+            [ "$DOCKERHUB_ENABLED" = "true" ] && echo "docker.io/${DOCKERHUB_NAMESPACE,,}/$IMAGE_NAME"
+            [ "$QUAY_ENABLED" = "true" ] && echo "quay.io/${QUAY_NAMESPACE,,}/$IMAGE_NAME"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create multi-arch tags
+        env:
+          IMAGES: ${{ steps.images.outputs.list }}
+          MINOR: ${{ needs.resolve.outputs.minor }}
+          IS_LATEST: ${{ needs.resolve.outputs.is_latest }}
+        working-directory: ${{ runner.temp }}/digests
+        run: |
+          set -euo pipefail
+          tags=("$VERSION")
+          if [ "$IS_LATEST" = "true" ]; then tags+=("$MINOR" latest); fi
+          for img in $IMAGES; do
+            args=()
+            for t in "${tags[@]}"; do args+=(-t "$img:$t"); done
+            # shellcheck disable=SC2046
+            docker buildx imagetools create "${args[@]}" $(printf "$img@sha256:%s " *)
+          done
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign images (keyless)
+        env:
+          IMAGES: ${{ steps.images.outputs.list }}
+        run: |
+          set -euo pipefail
+          for img in $IMAGES; do
+            digest=$(docker buildx imagetools inspect "$img:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+            cosign sign --yes "${img}@${digest}"
+          done
+
+      - name: Sync Docker Hub description
+        if: env.DOCKERHUB_ENABLED == 'true' && github.ref == 'refs/heads/main'
+        uses: peter-evans/dockerhub-description@v4
+        with:
+          username: ${{ vars.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          repository: ${{ vars.DOCKERHUB_NAMESPACE || github.repository_owner }}/${{ env.IMAGE_NAME }}
+          short-description: "Discourse forum, one process per container, built for Kubernetes. Multi-arch, signed, SBOM."
+          readme-filepath: ./README.md
