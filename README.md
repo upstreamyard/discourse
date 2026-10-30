@@ -2,6 +2,8 @@
 
 # Discourse container image
 
+> **Support:** For help with setup, production issues or custom changes, email [upstreamyard@proton.me](mailto:upstreamyard@proton.me).
+
 Multi-arch (`amd64`, `arm64`), signed container images for [Discourse](https://github.com/discourse/discourse), the open-source community forum, built to run like any other app container: one process per container, configured by environment variables, with external PostgreSQL and Redis. Made for Kubernetes and Docker Compose.
 
 > Community-maintained by **upstreamyard**. This is not an official Discourse image. Discourse is © Civilized Discourse Construction Kit, Inc. and licensed under GPL-2.0-or-later (license text and copyright notice in `/licenses/discourse/` inside the image); "Discourse" is a registered trademark of Civilized Discourse Construction Kit, Inc.
