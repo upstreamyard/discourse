@@ -113,7 +113,7 @@ jobs:
 
       # ---------- Smoke test before anything is published ----------
       - name: Build test image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
@@ -171,7 +171,7 @@ jobs:
       - name: Build and push by digest
         id: push
         if: env.PUBLISH == 'true'
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           platforms: ${{ matrix.platform }}
